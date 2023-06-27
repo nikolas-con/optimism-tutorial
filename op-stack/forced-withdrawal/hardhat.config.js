@@ -19,6 +19,10 @@ require('dotenv').config();
  * @type import('hardhat/config').HardhatUserConfig
  */
 // CHAIN_ID=10 npx hardhat node --fork https://opt-mainnet.g.alchemy.com/v2/PaFBIwnjn_Mb-f8tr9nZgI2rNZvTP2xo
+// anvil -f https://opt-mainnet.g.alchemy.com/v2/PaFBIwnjn_Mb-f8tr9nZgI2rNZvTP2xo  
+// --fork-chain-id 10
+//  --fork-block-number 17480610
+
 module.exports = {
   solidity: "0.8.4",
   networks :{
