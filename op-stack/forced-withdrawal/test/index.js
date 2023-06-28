@@ -45,8 +45,12 @@ const Interface = new ethers.utils.Interface([
   'event WithdrawalFinalized(bytes32 indexed withdrawalHash, bool success)',
   'event Transfer(address indexed from, address indexed to, uint256 value)',
   'event ERC20BridgeFinalized(address indexed localToken,address indexed remoteToken,address indexed from,address to,uint256 amount,bytes extraData)',
-  'event Mint(address indexed account, uint256 amount)',
-  'event Approval(address indexed owner, address indexed spender, uint256 value)'
+  // 'event Mint(address indexed account, uint256 amount)',
+  'event Mint(address indexed minter, address indexed to, uint256 amount)',
+  'event Approval(address indexed owner, address indexed spender, uint256 value)',
+  'event ERC20WithdrawalFinalized(address indexed l1Token,address indexed l2Token,address indexed from,address to,uint256 amount,bytes extraData)',
+  'event Burn(address indexed account, uint256 tokenId)',
+  'event ERC20BridgeInitiated(address indexed localToken,address indexed remoteToken,address indexed from,address to,uint256 amount,bytes extraData)'
  ])
 
  const SCC_INTERFACE = new ethers.utils.Interface([
@@ -81,8 +85,8 @@ describe("Optimism deposit/withdraw", function () {
       },
       bridges: BRIDGES
     });
-    crossChainMessenger.getMessageStatus()
   })
+  
   it.skip("deposit", async function () {
     const transferAmt = ethers.utils.parseEther("1")
 
@@ -117,42 +121,61 @@ describe("Optimism deposit/withdraw", function () {
     expect(l2BalanceBefore.add(transferAmt)).to.be.eq(l2Balance)
   })
 
-  it("withdraw", async function () {
-    // const withdrawAmount = ethers.utils.parseEther("0.5")
-    // const tx = await crossChainMessenger.withdrawETH(withdrawAmount)
-    // const tx_resit = await tx.wait()
-    // const logsParsed = tx_resit.logs.map((log) => Interface.parseLog(log))
-    // expect(logsParsed.length).eq(5)
+  it.skip("Withdrawal initiating transaction", async function (){
+    const L2_BRIDGE_ADDRESS ="0x4200000000000000000000000000000000000010"
+    const INTERFACE_L2_BRIDGE = new ethers.utils.Interface([
+      'function withdraw(address _l2Token,uint256 _amount,uint32 _l1Gas,bytes calldata _data) external payable',
+      'event WithdrawalInitiated(address indexed l1Token,address indexed l2Token,address indexed from,address to,uint256 amount,bytes extraData)',
+      'event ETHBridgeInitiated(address indexed from,address indexed to,uint256 amount,bytes extraData)',
+      'event MessagePassed(uint256 indexed nonce, address indexed sender,address indexed target,uint256 value,uint256 gasLimit,bytes data,bytes32 withdrawalHash)',
+      'event SentMessage(address indexed target,address sender,bytes message,uint256 messageNonce,uint256 gasLimit)',
+      'event SentMessageExtension1(address indexed sender, uint256 value)'
+    ])
+    const  OVM_ETH = "0xDeadDeAddeAddEAddeadDEaDDEAdDeaDDeAD0000"
+    const l2Signer = await l2Provider.getSigner(account.address)
+    const l2BridgeAddress = new ethers.Contract(L2_BRIDGE_ADDRESS, INTERFACE_L2_BRIDGE, l2Signer)
 
-    // console.log(await ethers.provider.getTransactionReceipt("0x1dd030c744019171bf4d72f31b5420f60cf0abfdd36eef0afd4de082debc3bae"))
-    const tx_hash = "0x11abf844724a91ace89d6bd22416cb855919f418a8300a6c11344e639a7815b5"
-    const tx_receipt = await l2Provider.getTransactionReceipt(tx_hash)
-    const logsParsed = Interface.parseLog(tx_receipt.logs[2])
+    const withdrawAmount = ethers.utils.parseEther("0.5")
+    const tx = await l2BridgeAddress.withdraw(OVM_ETH, withdrawAmount, 0, [], {value: withdrawAmount}).then(r => r.wait())
+    const logsParsed = tx.logs.map((log) => Interface.parseLog(log))
+    expect(logsParsed.length).eq(5)
+  
+  })
+
+  it("proveMessage", async function () {
+    const OPTIMISM_PORTAL_ADDRESS="0xbEb5Fc579115071764c7423A4f12eDde41f106Ed"
+    const optimismPortalData = optimismContracts.getContractDefinition("OptimismPortal")
+    const optimismPortal = new ethers.Contract(OPTIMISM_PORTAL_ADDRESS, optimismPortalData.abi, account)
+
+    const TX_HASH = "0x11abf844724a91ace89d6bd22416cb855919f418a8300a6c11344e639a7815b5"
+  
+    const resolved = await crossChainMessenger.toCrossChainMessage(TX_HASH)
+    const withdrawal = await crossChainMessenger.toLowLevelMessage(resolved)
+    const proof = await crossChainMessenger.getBedrockMessageProof(resolved)
     
-    await crossChainMessenger.proveMessage(tx_hash)
+    const WithdrawalTransaction = [ withdrawal.messageNonce, withdrawal.sender, withdrawal.target, withdrawal.value, withdrawal.minGasLimit, withdrawal.message ]
+    const OutputRootProof = [ proof.outputRootProof.version, proof.outputRootProof.stateRoot, proof.outputRootProof.messagePasserStorageRoot, proof.outputRootProof.latestBlockhash ]
+    await optimismPortal.proveWithdrawalTransaction(WithdrawalTransaction, proof.l2OutputIndex, OutputRootProof,  proof.withdrawalProof)
 
-    const ERC20 = new ethers.Contract(logsParsed.args[0], ERC20_INTERFACE, account)
-    const beforeBalance = await ERC20.balanceOf(tx_receipt.from)
+    const txReceipt = await l2Provider.getTransactionReceipt(TX_HASH)
+    const logsParsed1 = txReceipt.logs.map((log) => Interface.parseLog(log))
+    const withdrawalInitiatedEvent = logsParsed1.find(log => log.name === "WithdrawalInitiated" )
+    const erc20Token = new ethers.Contract(withdrawalInitiatedEvent.args[0], ERC20_INTERFACE, account)
+    const beforeBalance = await erc20Token.balanceOf(txReceipt.from)
     
     const scc = new ethers.Contract(L1_CONTRACTS.StateCommitmentChain, SCC_INTERFACE, account)
     const fraudProofWindow =  await scc.FRAUD_PROOF_WINDOW()
     await network.provider.request({method: "evm_increaseTime", params: [fraudProofWindow.toNumber() * 2]})
     await network.provider.request({method: "evm_mine", params: []})
-    
-    const tx = await crossChainMessenger.finalizeMessage(tx_hash)
-    const re = await tx.wait()
-    // const logsParsed = re.logs.map((log) => Interface.parseLog(log))
-    console.log(Interface.parseLog(re.logs[0]))
-    // console.log(Interface.parseLog(re.logs[1]))
-    console.log(Interface.parseLog(re.logs[2]))
-    console.log(Interface.parseLog(re.logs[3]))
-    console.log(Interface.parseLog(re.logs[4]))
-    
-    await crossChainMessenger.getMessagesByTransaction(tx_hash)
-    
-    const afterBalance =  await ERC20.balanceOf(tx_receipt.from)
+
+    const txFinalizeWithdrawalTransaction = await optimismPortal.finalizeWithdrawalTransaction(WithdrawalTransaction).then(r=> r.wait())
+    const logsParsed = txFinalizeWithdrawalTransaction.logs.map((log) => Interface.parseLog(log))
+    console.log(logsParsed)
+
+
+    const afterBalance = await erc20Token.balanceOf(txReceipt.from)
+    expect(afterBalance).gt(beforeBalance)
     console.log(ethers.utils.formatEther(beforeBalance), ethers.utils.formatEther(afterBalance))
-    return
   });
 
   it.skip("optimism L2StandardBridge contract exist", async function () {
